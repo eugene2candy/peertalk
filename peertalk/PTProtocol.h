@@ -13,6 +13,7 @@
 // - Lightweight API on top of libdispatch (aka GCD) -- close to the metal.
 //
 #include <dispatch/dispatch.h>
+#import <Foundation/Foundation.h>
 
 // Special frame tag that signifies "no tag". Your implementation should never
 // create a reply for a frame with this tag.
@@ -104,12 +105,10 @@ FOUNDATION_EXPORT NSString * const PTProtocolErrorDomain;
 // dispatch_release on the returned object when done.
 - (dispatch_data_t)createReferencingDispatchData;
 + (NSData *)dataWithContentsOfDispatchData:(dispatch_data_t)data;
++ (NSDictionary *)dictionaryWithContentsOfData:(NSData *)data;
 @end
 
 @interface NSDictionary (PTProtocol)
 // See description of -[NSData(PTProtocol) createReferencingDispatchData]
 - (dispatch_data_t)createReferencingDispatchData;
-
-// Decode *data* as a peroperty list-encoded dictionary. Returns nil on failure.
-+ (NSDictionary*)dictionaryWithContentsOfDispatchData:(dispatch_data_t)data;
 @end

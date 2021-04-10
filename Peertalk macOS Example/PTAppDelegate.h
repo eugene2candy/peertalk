@@ -1,4 +1,6 @@
-#import "PTChannel.h"
+#import <Cocoa/Cocoa.h>
+
+#import <peertalk/PTChannel.h>
 
 static const NSTimeInterval PTAppReconnectDelay = 1.0;
 

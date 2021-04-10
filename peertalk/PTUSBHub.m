@@ -45,7 +45,9 @@ typedef struct usbmux_packet {
   USBMuxPacketType type;
   uint32_t tag;
   char data[0];
-} usbmux_packet_t;
+} __attribute__((__packed__)) usbmux_packet_t;
+
+static const uint32_t kUsbmuxPacketMaxPayloadSize = UINT32_MAX - (uint32_t)sizeof(usbmux_packet_t);
 
 
 static uint32_t usbmux_packet_payload_size(usbmux_packet_t *upacket) {
@@ -58,28 +60,34 @@ static void *usbmux_packet_payload(usbmux_packet_t *upacket) {
 }
 
 
-static void usbmux_packet_set_payload(usbmux_packet_t *upacket, const void *payload, uint32_t payloadLength) {
+static void usbmux_packet_set_payload(usbmux_packet_t *upacket,
+                                      const void *payload,
+                                      uint32_t payloadLength)
+{
   memcpy(usbmux_packet_payload(upacket), payload, payloadLength);
 }
 
 
-static usbmux_packet_t *usbmux_packet_alloc(CFIndex payloadSize) {
-  assert(payloadSize <= UINT32_MAX); // protocol limitation
-  uint32_t payloadLength = (uint32_t)payloadSize;
-  uint32_t upacketLength = sizeof(usbmux_packet_t) + payloadLength;
-  assert(sizeof(usbmux_packet_t) == 16);
-  usbmux_packet_t *upacket = CFAllocatorAllocate(kCFAllocatorDefault, upacketLength, 0);
+static usbmux_packet_t *usbmux_packet_alloc(uint32_t payloadSize) {
+  assert(payloadSize <= kUsbmuxPacketMaxPayloadSize);
+  uint32_t upacketSize = sizeof(usbmux_packet_t) + payloadSize;
+  usbmux_packet_t *upacket = CFAllocatorAllocate(kCFAllocatorDefault, upacketSize, 0);
   memset(upacket, 0, sizeof(usbmux_packet_t));
-  upacket->size = upacketLength;
+  upacket->size = upacketSize;
   return upacket;
 }
 
 
-static usbmux_packet_t *usbmux_packet_create(USBMuxPacketProtocol protocol, USBMuxPacketType type, uint32_t tag, const void *payload, NSUInteger payloadSize) {
+static usbmux_packet_t *usbmux_packet_create(USBMuxPacketProtocol protocol,
+                                             USBMuxPacketType type,
+                                             uint32_t tag,
+                                             const void *payload,
+                                             uint32_t payloadSize)
+{
   usbmux_packet_t *upacket = usbmux_packet_alloc(payloadSize);
-  
-  if (!upacket)
+  if (!upacket) {
     return NULL;
+  }
   
   upacket->protocol = protocol;
   upacket->type = type;
@@ -98,12 +106,15 @@ static void usbmux_packet_free(usbmux_packet_t *upacket) {
 }
 
 
-NSString * const PTUSBDeviceDidAttachNotification = @"PTUSBDeviceDidAttachNotification";
-NSString * const PTUSBDeviceDidDetachNotification = @"PTUSBDeviceDidDetachNotification";
+NSNotificationName const PTUSBDeviceDidAttachNotification = @"PTUSBDeviceDidAttachNotification";
+NSNotificationName const PTUSBDeviceDidDetachNotification = @"PTUSBDeviceDidDetachNotification";
+
+PTUSBHubNotificationKey const PTUSBHubNotificationKeyDeviceID = @"DeviceID";
+PTUSBHubNotificationKey const PTUSBHubNotificationKeyMessageType = @"MessageType";
+PTUSBHubNotificationKey const PTUSBHubNotificationKeyProperties = @"Properties";
 
 static NSString *kPlistPacketTypeListen = @"Listen";
 static NSString *kPlistPacketTypeConnect = @"Connect";
-
 
 // Represents a channel of communication between the host process and a remote
 // (device) system. In practice, a PTUSBChannel is connected to a usbmuxd
@@ -224,7 +235,7 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
   
   NSDictionary *packet = [PTUSBChannel packetDictionaryWithPacketType:kPlistPacketTypeConnect
                                                              payload:[NSDictionary dictionaryWithObjectsAndKeys:
-                                                                      deviceID, @"DeviceID",
+                                                                      deviceID, PTUSBHubNotificationKeyDeviceID,
                                                                       [NSNumber numberWithInt:port], @"PortNumber",
                                                                       nil]];
   
@@ -237,7 +248,7 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
 
 
 - (void)handleBroadcastPacket:(NSDictionary*)packet {
-  NSString *messageType = [packet objectForKey:@"MessageType"];
+  NSString *messageType = [packet objectForKey:PTUSBHubNotificationKeyMessageType];
   
   if ([@"Attached" isEqualToString:messageType]) {
     [[NSNotificationCenter defaultCenter] postNotificationName:PTUSBDeviceDidAttachNotification object:self userInfo:packet];
@@ -271,12 +282,12 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
   
   if (bundleName) {
     packet = [NSDictionary dictionaryWithObjectsAndKeys:
-              messageType, @"MessageType",
+              messageType, PTUSBHubNotificationKeyMessageType,
               bundleName, @"ProgName",
               bundleVersion, @"ClientVersionString",
               nil];
   } else {
-    packet = [NSDictionary dictionaryWithObjectsAndKeys:messageType, @"MessageType", nil];
+    packet = [NSDictionary dictionaryWithObjectsAndKeys:messageType, PTUSBHubNotificationKeyMessageType, nil];
   }
   
   if (payload) {
@@ -297,11 +308,7 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
 
 
 - (void)dealloc {
-  //NSLog(@"dealloc %@", self);
   if (channel_) {
-#if PT_DISPATCH_RETAIN_RELEASE
-    dispatch_release(channel_);
-#endif
     channel_ = nil;
   }
 }
@@ -341,7 +348,7 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
   // Connect socket
   struct sockaddr_un addr;
   addr.sun_family = AF_UNIX;
-  strcpy(addr.sun_path, "/var/run/usbmuxd");
+  strcpy(addr.sun_path, "/private/var/run/usbmuxd");
   socklen_t socklen = sizeof(addr);
   if (connect(fd, (struct sockaddr*)&addr, socklen) == -1) {
     if (error) *error = [[NSError alloc] initWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];
@@ -417,8 +424,8 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
       return;
     }
     // TODO: timeout un-triggered callbacks in responseQueue_
-    if (!responseQueue_) responseQueue_ = [NSMutableDictionary new];
-    [responseQueue_ setObject:callback forKey:[NSNumber numberWithUnsignedInt:tag]];
+		if (!self->responseQueue_) self->responseQueue_ = [NSMutableDictionary new];
+		[self->responseQueue_ setObject:callback forKey:[NSNumber numberWithUnsignedInt:tag]];
   }];
   
   // We are awaiting a response
@@ -440,14 +447,13 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
     // Interpret the package we just received
     if (packetTag == 0) {
       // Broadcast message
-      //NSLog(@"Received broadcast: %@", packet);
       if (broadcastHandler) broadcastHandler(packet);
-    } else if (responseQueue_) {
+		} else if (self->responseQueue_) {
       // Reply
       NSNumber *key = [NSNumber numberWithUnsignedInt:packetTag];
-      void(^requestCallback)(NSError*,NSDictionary*) = [responseQueue_ objectForKey:key];
+			void(^requestCallback)(NSError*,NSDictionary*) = [self->responseQueue_ objectForKey:key];
       if (requestCallback) {
-        [responseQueue_ removeObjectForKey:key];
+				[self->responseQueue_ removeObjectForKey:key];
         requestCallback(error, packet);
       } else {
         NSLog(@"Warning: Ignoring reply packet for which there is no registered callback. Packet => %@", packet);
@@ -455,7 +461,7 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
     }
     
     // Schedule reading another incoming package
-    if (autoReadPackets_) {
+		if (self->autoReadPackets_) {
       [self scheduleReadPacketWithBroadcastHandler:broadcastHandler];
     }
   }];
@@ -465,15 +471,14 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
 - (void)scheduleReadPacketWithCallback:(void(^)(NSError*, NSDictionary*, uint32_t))callback {
   static usbmux_packet_t ref_upacket;
   isReadingPackets_ = YES;
-  
+
+  // Read the first `sizeof(ref_upacket.size)` bytes off the channel_
   dispatch_io_read(channel_, 0, sizeof(ref_upacket.size), queue_, ^(bool done, dispatch_data_t data, int error) {
-    //NSLog(@"dispatch_io_read 0,4: done=%d data=%p error=%d", done, data, error);
-    
     if (!done)
       return;
     
     if (error) {
-      isReadingPackets_ = NO;
+			self->isReadingPackets_ = NO;
       callback([[NSError alloc] initWithDomain:NSPOSIXErrorDomain code:error userInfo:nil], nil, 0);
       return;
     }
@@ -484,27 +489,37 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
     size_t buffer_size = 0;
     PT_PRECISE_LIFETIME_UNUSED dispatch_data_t map_data = dispatch_data_create_map(data, (const void **)&buffer, &buffer_size); // objc_precise_lifetime guarantees 'map_data' isn't released before memcpy has a chance to do its thing
     assert(buffer_size == sizeof(ref_upacket.size));
+    assert(sizeof(upacket_len) == sizeof(ref_upacket.size));
     memcpy((void *)&(upacket_len), (const void *)buffer, buffer_size);
-#if PT_DISPATCH_RETAIN_RELEASE
-    dispatch_release(map_data);
-#endif
-    
+
     // Allocate a new usbmux_packet_t for the expected size
-    uint32_t payloadLength = upacket_len - sizeof(usbmux_packet_t);
+    uint32_t payloadLength = upacket_len - (uint32_t)sizeof(usbmux_packet_t);
     usbmux_packet_t *upacket = usbmux_packet_alloc(payloadLength);
     
     // Read rest of the incoming usbmux_packet_t
     off_t offset = sizeof(ref_upacket.size);
-    dispatch_io_read(channel_, offset, upacket->size - offset, queue_, ^(bool done, dispatch_data_t data, int error) {
+		dispatch_io_read(self->channel_, offset, upacket->size - offset, self->queue_, ^(bool done, dispatch_data_t data, int error) {
       //NSLog(@"dispatch_io_read X,Y: done=%d data=%p error=%d", done, data, error);
       
-      if (!done)
+      if (!done) {
         return;
+      }
       
-      isReadingPackets_ = NO;
+			self->isReadingPackets_ = NO;
       
       if (error) {
         callback([[NSError alloc] initWithDomain:NSPOSIXErrorDomain code:error userInfo:nil], nil, 0);
+        usbmux_packet_free(upacket);
+        return;
+      }
+
+      if (upacket_len > kUsbmuxPacketMaxPayloadSize) {
+        callback(
+          [[NSError alloc] initWithDomain:PTUSBHubErrorDomain code:1 userInfo:@{
+            NSLocalizedDescriptionKey:@"Received a packet that is too large"}],
+          nil,
+          0
+        );
         usbmux_packet_free(upacket);
         return;
       }
@@ -515,10 +530,7 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
       PT_PRECISE_LIFETIME_UNUSED dispatch_data_t map_data = dispatch_data_create_map(data, (const void **)&buffer, &buffer_size);
       assert(buffer_size == upacket->size - offset);
       memcpy(((void *)(upacket))+offset, (const void *)buffer, buffer_size);
-#if PT_DISPATCH_RETAIN_RELEASE
-      dispatch_release(map_data);
-#endif
-      
+
       // We only support plist protocol
       if (upacket->protocol != USBMuxPacketProtocolPlist) {
         callback([[NSError alloc] initWithDomain:PTUSBHubErrorDomain code:0 userInfo:[NSDictionary dictionaryWithObject:@"Unexpected package protocol" forKey:NSLocalizedDescriptionKey]], nil, upacket->tag);
@@ -548,14 +560,24 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
 }
 
 
-- (void)sendPacketOfType:(USBMuxPacketType)type overProtocol:(USBMuxPacketProtocol)protocol tag:(uint32_t)tag payload:(NSData*)payload callback:(void(^)(NSError*))callback {
-  usbmux_packet_t *upacket = usbmux_packet_create(protocol, type, tag, payload ? payload.bytes : nil, payload ? payload.length : 0);
+- (void)sendPacketOfType:(USBMuxPacketType)type
+            overProtocol:(USBMuxPacketProtocol)protocol
+                     tag:(uint32_t)tag
+                 payload:(NSData*)payload
+                callback:(void(^)(NSError*))callback
+{
+  assert(payload.length <= kUsbmuxPacketMaxPayloadSize);
+  usbmux_packet_t *upacket = usbmux_packet_create(
+    protocol,
+    type,
+    tag,
+    payload ? payload.bytes : nil,
+    (uint32_t)(payload ? payload.length : 0)
+  );
   dispatch_data_t data = dispatch_data_create((const void*)upacket, upacket->size, queue_, ^{
     // Free packet when data is freed
     usbmux_packet_free(upacket);
   });
-  //NSData *data1 = [NSData dataWithBytesNoCopy:(void*)upacket length:upacket->size freeWhenDone:NO];
-  //[data1 writeToFile:[NSString stringWithFormat:@"/Users/rsms/c-packet-%u.data", tag] atomically:NO];
   [self sendDispatchData:data callback:callback];
 }
 
@@ -584,9 +606,6 @@ static NSString *kPlistPacketTypeConnect = @"Connect";
       callback(err);
     }
   });
-#if PT_DISPATCH_RETAIN_RELEASE
-  dispatch_release(data); // Release our ref. A ref is still held by dispatch_io_write
-#endif
 }
 
 #pragma clang diagnostic push
